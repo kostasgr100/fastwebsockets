@@ -23,8 +23,9 @@ use crate::WebSocket;
 #[cfg(feature = "unstable-split")]
 use crate::WebSocketRead;
 use crate::WriteHalf;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
+use tokio_uring::buf::{IoBuf, IoBufMut};
+use tokio_uring::net::TcpStream;
+use encoding_rs::UTF_8;
 
 pub enum Fragment {
   Text(Option<utf8::Incomplete>, Vec<u8>),
@@ -50,196 +51,41 @@ impl Fragment {
 /// # Example
 ///
 /// ```
-/// use tokio::net::TcpStream;
+/// use tokio_uring::net::TcpStream;
 /// use fastwebsockets::{WebSocket, FragmentCollector, OpCode, Role};
 /// use anyhow::Result;
 ///
 /// async fn handle_client(
 ///   socket: TcpStream,
 /// ) -> Result<()> {
-///   let ws = WebSocket::after_handshake(socket, Role::Server);
-///   let mut ws = FragmentCollector::new(ws);
-///
-///   loop {
-///     let frame = ws.read_frame().await?;
-///     match frame.opcode {
-///       OpCode::Close => break,
-///       OpCode::Text | OpCode::Binary => {
-///         ws.write_frame(frame).await?;
-///       }
-///       _ => {}
-///     }
-///   }
-///   Ok(())
+///   tokio_uring::start(async move {
+///     let ws = WebSocket::after_handshake(socket, Role::Server).await?;
+///     let mut ws = FragmentCollector::new(ws);
+///     // Handle WebSocket connection...
+///     Ok(())
+///   })
 /// }
 /// ```
-///
 pub struct FragmentCollector<S> {
-  stream: S,
-  read_half: ReadHalf,
-  write_half: WriteHalf,
-  fragments: Fragments,
-}
-
-impl<'f, S> FragmentCollector<S> {
-  /// Creates a new `FragmentCollector` with the provided `WebSocket`.
-  pub fn new(ws: WebSocket<S>) -> FragmentCollector<S>
-  where
-    S: AsyncRead + AsyncWrite + Unpin,
-  {
-    let (stream, read_half, write_half) = ws.into_parts_internal();
-    FragmentCollector {
-      stream,
-      read_half,
-      write_half,
-      fragments: Fragments::new(),
-    }
-  }
-
-  /// Reads a WebSocket frame, collecting fragmented messages until the final frame is received and returns the completed message.
-  ///
-  /// Text frames payload is guaranteed to be valid UTF-8.
-  pub async fn read_frame(&mut self) -> Result<Frame<'f>, WebSocketError>
-  where
-    S: AsyncRead + AsyncWrite + Unpin,
-  {
-    loop {
-      let (res, obligated_send) =
-        self.read_half.read_frame_inner(&mut self.stream).await;
-      let is_closed = self.write_half.closed;
-      if let Some(obligated_send) = obligated_send {
-        if !is_closed {
-          self.write_frame(obligated_send).await?;
-        }
-      }
-      let Some(frame) = res? else {
-        continue;
-      };
-      if is_closed && frame.opcode != OpCode::Close {
-        return Err(WebSocketError::ConnectionClosed);
-      }
-      if let Some(frame) = self.fragments.accumulate(frame)? {
-        return Ok(frame);
-      }
-    }
-  }
-
-  /// See `WebSocket::write_frame`.
-  pub async fn write_frame(
-    &mut self,
-    frame: Frame<'f>,
-  ) -> Result<(), WebSocketError>
-  where
-    S: AsyncRead + AsyncWrite + Unpin,
-  {
-    self.write_half.write_frame(&mut self.stream, frame).await?;
-    Ok(())
-  }
-
-  /// Consumes the `FragmentCollector` and returns the underlying stream.
-  #[inline]
-  pub fn into_inner(self) -> S {
-    self.stream
-  }
-}
-
-#[cfg(feature = "unstable-split")]
-pub struct FragmentCollectorRead<S> {
-  stream: S,
-  read_half: ReadHalf,
-  fragments: Fragments,
-}
-
-#[cfg(feature = "unstable-split")]
-impl<'f, S> FragmentCollectorRead<S> {
-  /// Creates a new `FragmentCollector` with the provided `WebSocket`.
-  pub fn new(ws: WebSocketRead<S>) -> FragmentCollectorRead<S>
-  where
-    S: AsyncRead + Unpin,
-  {
-    let (stream, read_half) = ws.into_parts_internal();
-    FragmentCollectorRead {
-      stream,
-      read_half,
-      fragments: Fragments::new(),
-    }
-  }
-
-  /// Reads a WebSocket frame, collecting fragmented messages until the final frame is received and returns the completed message.
-  ///
-  /// Text frames payload is guaranteed to be valid UTF-8.
-  pub async fn read_frame<R, E>(
-    &mut self,
-    send_fn: &mut impl FnMut(Frame<'f>) -> R,
-  ) -> Result<Frame<'f>, WebSocketError>
-  where
-    S: AsyncRead + Unpin,
-    E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
-    R: Future<Output = Result<(), E>>,
-  {
-    loop {
-      let (res, obligated_send) =
-        self.read_half.read_frame_inner(&mut self.stream).await;
-      if let Some(frame) = obligated_send {
-        let res = send_fn(frame).await;
-        res.map_err(|e| WebSocketError::SendError(e.into()))?;
-      }
-      let Some(frame) = res? else {
-        continue;
-      };
-      if let Some(frame) = self.fragments.accumulate(frame)? {
-        return Ok(frame);
-      }
-    }
-  }
-}
-
-/// Accumulates potentially fragmented [`Frame`]s to defragment the incoming WebSocket stream.
-struct Fragments {
+  socket: S,
   fragments: Option<Fragment>,
   opcode: OpCode,
 }
 
-impl Fragments {
-  pub fn new() -> Self {
+impl<S> FragmentCollector<S>
+where
+  S: IoBufMut,
+{
+  pub fn new(socket: S) -> Self {
     Self {
+      socket,
       fragments: None,
-      opcode: OpCode::Close,
+      opcode: OpCode::Text,
     }
   }
 
-  pub fn accumulate<'f>(
-    &mut self,
-    frame: Frame<'f>,
-  ) -> Result<Option<Frame<'f>>, WebSocketError> {
+  pub async fn process_frame(&mut self, frame: Frame) -> Result<Option<Frame>, WebSocketError> {
     match frame.opcode {
-      OpCode::Text | OpCode::Binary => {
-        if frame.fin {
-          if self.fragments.is_some() {
-            return Err(WebSocketError::InvalidFragment);
-          }
-          return Ok(Some(Frame::new(true, frame.opcode, None, frame.payload)));
-        } else {
-          self.fragments = match frame.opcode {
-            OpCode::Text => match utf8::decode(&frame.payload) {
-              Ok(text) => Some(Fragment::Text(None, text.as_bytes().to_vec())),
-              Err(utf8::DecodeError::Incomplete {
-                valid_prefix,
-                incomplete_suffix,
-              }) => Some(Fragment::Text(
-                Some(incomplete_suffix),
-                valid_prefix.as_bytes().to_vec(),
-              )),
-              Err(utf8::DecodeError::Invalid { .. }) => {
-                return Err(WebSocketError::InvalidUTF8);
-              }
-            },
-            OpCode::Binary => Some(Fragment::Binary(frame.payload.into())),
-            _ => unreachable!(),
-          };
-          self.opcode = frame.opcode;
-        }
-      }
       OpCode::Continuation => match self.fragments.as_mut() {
         None => {
           return Err(WebSocketError::InvalidContinuationFrame);
@@ -247,9 +93,7 @@ impl Fragments {
         Some(Fragment::Text(data, input)) => {
           let mut tail = &frame.payload[..];
           if let Some(mut incomplete) = data.take() {
-            if let Some((result, rest)) =
-              incomplete.try_complete(&frame.payload)
-            {
+            if let Some((result, rest)) = incomplete.try_complete(&frame.payload) {
               tail = rest;
               match result {
                 Ok(text) => {
@@ -308,4 +152,156 @@ impl Fragments {
 
     Ok(None)
   }
+
+  /// Accumulates frames into a single complete message.
+  pub fn accumulate<'f>(&'f mut self, frame: Frame) -> impl Future<Output = Result<Option<Frame>, WebSocketError>> + 'f {
+    async move {
+      if self.fragments.is_none() {
+        self.opcode = frame.opcode;
+        self.fragments = Some(match frame.opcode {
+          OpCode::Text => Fragment::Text(None, frame.payload.into()),
+          OpCode::Binary => Fragment::Binary(frame.payload.into()),
+          _ => return Ok(Some(frame)),
+        });
+      } else {
+        match self.fragments.as_mut().unwrap() {
+          Fragment::Text(_, data) | Fragment::Binary(data) => {
+            data.extend_from_slice(&frame.payload);
+          }
+        }
+      }
+
+      if frame.fin {
+        return Ok(Some(Frame::new(
+          true,
+          self.opcode,
+          None,
+          self.fragments.take().unwrap().take_buffer().into(),
+        )));
+      }
+
+      Ok(None)
+    }
+  }
+
+  /// Reads a WebSocket frame, collecting fragmented messages until the final frame is received and returns the completed message.
+  ///
+  /// Text frames payload is guaranteed to be valid UTF-8.
+  pub async fn read_frame(&mut self) -> Result<Frame, WebSocketError>
+  where
+    S: IoBufMut,
+  {
+    loop {
+      let frame = self.socket.read().await?;
+      if let Some(frame) = self.fragments.as_mut().unwrap().accumulate(frame).await? {
+        return Ok(frame);
+      }
+    }
+  }
+
+  /// See `WebSocket::write_frame`.
+  pub async fn write_frame(
+    &mut self,
+    frame: Frame,
+  ) -> Result<(), WebSocketError>
+  where
+    S: IoBufMut,
+  {
+    self.socket.write(frame.payload()).await?;
+    Ok(())
+  }
+
+  /// Consumes the `FragmentCollector` and returns the underlying stream.
+  #[inline]
+  pub fn into_inner(self) -> S {
+    self.socket
+  }
 }
+
+#[cfg(feature = "unstable-split")]
+pub struct FragmentCollectorRead<S> {
+  stream: S,
+  read_half: ReadHalf,
+  fragments: Fragments,
+}
+
+#[cfg(feature = "unstable-split")]
+impl<'f, S> FragmentCollectorRead<S> {
+  /// Creates a new `FragmentCollector` with the provided `WebSocket`.
+  pub fn new(ws: WebSocketRead<S>) -> FragmentCollectorRead<S>
+  where
+    S: IoBufMut,
+  {
+    let (stream, read_half) = ws.into_parts_internal();
+    FragmentCollectorRead {
+      stream,
+      read_half,
+      fragments: Fragments::new(),
+    }
+  }
+
+  /// Reads a WebSocket frame, collecting fragmented messages until the final frame is received and returns the completed message.
+  ///
+  /// Text frames payload is guaranteed to be valid UTF-8.
+  pub async fn read_frame<R, E>(
+    &mut self,
+    send_fn: &mut impl FnMut(Frame) -> R,
+  ) -> Result<Frame, WebSocketError>
+  where
+    S: IoBufMut,
+    E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    R: Future<Output = Result<(), E>>,
+  {
+    loop {
+      let frame = self.read_half.read_frame_inner(&mut self.stream).await?;
+      if let Some(frame) = self.fragments.accumulate(frame).await? {
+        return Ok(frame);
+      }
+    }
+  }
+}
+
+/// Accumulates potentially fragmented [`Frame`]s to defragment the incoming WebSocket stream.
+struct Fragments {
+  fragments: Option<Fragment>,
+  opcode: OpCode,
+}
+
+impl Fragments {
+  pub fn new() -> Self {
+    Self {
+      fragments: None,
+      opcode: OpCode::Close,
+    }
+  }
+
+  /// Accumulates a frame into the current fragment, returning a complete frame if finished.
+  pub async fn accumulate(&mut self, frame: Frame) -> Result<Option<Frame>, WebSocketError> {
+    if self.fragments.is_none() {
+      self.opcode = frame.opcode;
+      self.fragments = Some(match frame.opcode {
+        OpCode::Text => Fragment::Text(None, frame.payload.into()),
+        OpCode::Binary => Fragment::Binary(frame.payload.into()),
+        _ => return Ok(Some(frame)),
+      });
+    } else {
+      match self.fragments.as_mut().unwrap() {
+        Fragment::Text(_, data) | Fragment::Binary(data) => {
+          data.extend_from_slice(&frame.payload);
+        }
+      }
+    }
+
+    if frame.fin {
+      return Ok(Some(Frame::new(
+        true,
+        self.opcode,
+        None,
+        self.fragments.take().unwrap().take_buffer().into(),
+      )));
+    }
+
+    Ok(None)
+  }
+}
+

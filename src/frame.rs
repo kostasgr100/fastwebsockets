@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use tokio::io::AsyncWriteExt;
+use tokio_uring::buf::IoBuf;
+use tokio_uring::buf::IoBufMut;
+use tokio_uring::net::TcpStream;
 
 use bytes::BytesMut;
 use core::ops::Deref;
+use std::io::IoSlice;
 
 use crate::WebSocketError;
+
+const MAX_HEAD_SIZE: usize = 14;
 
 macro_rules! repr_u8 {
     ($(#[$meta:meta])* $vis:vis enum $name:ident {
@@ -68,201 +73,55 @@ impl Deref for Payload<'_> {
 }
 
 impl<'a> From<&'a mut [u8]> for Payload<'a> {
-  fn from(borrowed: &'a mut [u8]) -> Payload<'a> {
-    Payload::BorrowedMut(borrowed)
+  fn from(buffer: &'a mut [u8]) -> Self {
+    Payload::BorrowedMut(buffer)
   }
 }
 
 impl<'a> From<&'a [u8]> for Payload<'a> {
-  fn from(borrowed: &'a [u8]) -> Payload<'a> {
-    Payload::Borrowed(borrowed)
+  fn from(buffer: &'a [u8]) -> Self {
+    Payload::Borrowed(buffer)
   }
 }
 
-impl From<Vec<u8>> for Payload<'_> {
-  fn from(owned: Vec<u8>) -> Self {
-    Payload::Owned(owned)
+impl<'a> From<Vec<u8>> for Payload<'a> {
+  fn from(buffer: Vec<u8>) -> Self {
+    Payload::Owned(buffer)
   }
 }
 
-impl From<Payload<'_>> for Vec<u8> {
-  fn from(cow: Payload<'_>) -> Self {
-    match cow {
-      Payload::Borrowed(borrowed) => borrowed.to_vec(),
-      Payload::BorrowedMut(borrowed_mut) => borrowed_mut.to_vec(),
-      Payload::Owned(owned) => owned,
-      Payload::Bytes(b) => Vec::from(b),
-    }
+impl<'a> From<BytesMut> for Payload<'a> {
+  fn from(buffer: BytesMut) -> Self {
+    Payload::Bytes(buffer)
   }
 }
 
-impl Payload<'_> {
-  #[inline(always)]
-  pub fn to_mut(&mut self) -> &mut [u8] {
+impl<'a> Payload<'a> {
+  pub fn len(&self) -> usize {
     match self {
-      Payload::Borrowed(borrowed) => {
-        *self = Payload::Owned(borrowed.to_owned());
-        match self {
-          Payload::Owned(owned) => owned,
-          _ => unreachable!(),
-        }
-      }
-      Payload::BorrowedMut(borrowed) => borrowed,
-      Payload::Owned(ref mut owned) => owned,
-      Payload::Bytes(b) => b.as_mut(),
+      Payload::Borrowed(buffer) => buffer.len(),
+      Payload::BorrowedMut(buffer) => buffer.len(),
+      Payload::Owned(buffer) => buffer.len(),
+      Payload::Bytes(buffer) => buffer.len(),
     }
   }
 }
 
-impl<'a> PartialEq<&'_ [u8]> for Payload<'a> {
-  fn eq(&self, other: &&'_ [u8]) -> bool {
-    self.deref() == *other
-  }
-}
-
-impl<'a, const N: usize> PartialEq<&'_ [u8; N]> for Payload<'a> {
-  fn eq(&self, other: &&'_ [u8; N]) -> bool {
-    self.deref() == *other
-  }
-}
-
-/// Represents a WebSocket frame.
-pub struct Frame<'f> {
-  /// Indicates if this is the final frame in a message.
+pub struct Frame<'a> {
+  pub payload: Payload<'a>,
+  pub mask: Option<[u8; 4]>,
   pub fin: bool,
-  /// The opcode of the frame.
   pub opcode: OpCode,
-  /// The masking key of the frame, if any.
-  mask: Option<[u8; 4]>,
-  /// The payload of the frame.
-  pub payload: Payload<'f>,
 }
 
-const MAX_HEAD_SIZE: usize = 16;
-
-impl<'f> Frame<'f> {
-  /// Creates a new WebSocket `Frame`.
-  pub fn new(
-    fin: bool,
-    opcode: OpCode,
-    mask: Option<[u8; 4]>,
-    payload: Payload<'f>,
-  ) -> Self {
-    Self {
-      fin,
-      opcode,
-      mask,
-      payload,
-    }
-  }
-
-  /// Create a new WebSocket text `Frame`.
-  ///
-  /// This is a convenience method for `Frame::new(true, OpCode::Text, None, payload)`.
-  ///
-  /// This method does not check if the payload is valid UTF-8.
-  pub fn text(payload: Payload<'f>) -> Self {
-    Self {
-      fin: true,
-      opcode: OpCode::Text,
-      mask: None,
-      payload,
-    }
-  }
-
-  /// Create a new WebSocket binary `Frame`.
-  ///
-  /// This is a convenience method for `Frame::new(true, OpCode::Binary, None, payload)`.
-  pub fn binary(payload: Payload<'f>) -> Self {
-    Self {
-      fin: true,
-      opcode: OpCode::Binary,
-      mask: None,
-      payload,
-    }
-  }
-
-  /// Create a new WebSocket close `Frame`.
-  ///
-  /// This is a convenience method for `Frame::new(true, OpCode::Close, None, payload)`.
-  ///
-  /// This method does not check if `code` is a valid close code and `reason` is valid UTF-8.
-  pub fn close(code: u16, reason: &[u8]) -> Self {
-    let mut payload = Vec::with_capacity(2 + reason.len());
-    payload.extend_from_slice(&code.to_be_bytes());
-    payload.extend_from_slice(reason);
-
-    Self {
-      fin: true,
-      opcode: OpCode::Close,
-      mask: None,
-      payload: payload.into(),
-    }
-  }
-
-  /// Create a new WebSocket close `Frame` with a raw payload.
-  ///
-  /// This is a convenience method for `Frame::new(true, OpCode::Close, None, payload)`.
-  ///
-  /// This method does not check if `payload` is valid Close frame payload.
-  pub fn close_raw(payload: Payload<'f>) -> Self {
-    Self {
-      fin: true,
-      opcode: OpCode::Close,
-      mask: None,
-      payload,
-    }
-  }
-
-  /// Create a new WebSocket pong `Frame`.
-  ///
-  /// This is a convenience method for `Frame::new(true, OpCode::Pong, None, payload)`.
-  pub fn pong(payload: Payload<'f>) -> Self {
-    Self {
-      fin: true,
-      opcode: OpCode::Pong,
-      mask: None,
-      payload,
-    }
-  }
-
-  /// Checks if the frame payload is valid UTF-8.
-  pub fn is_utf8(&self) -> bool {
-    #[cfg(feature = "simd")]
-    return simdutf8::basic::from_utf8(&self.payload).is_ok();
-
-    #[cfg(not(feature = "simd"))]
-    return std::str::from_utf8(&self.payload).is_ok();
-  }
-
-  pub fn mask(&mut self) {
-    if let Some(mask) = self.mask {
-      crate::mask::unmask(self.payload.to_mut(), mask);
-    } else {
-      let mask: [u8; 4] = rand::random();
-      crate::mask::unmask(self.payload.to_mut(), mask);
-      self.mask = Some(mask);
-    }
-  }
-
-  /// Unmasks the frame payload in-place. This method does nothing if the frame is not masked.
-  ///
-  /// Note: By default, the frame payload is unmasked by `WebSocket::read_frame`.
-  pub fn unmask(&mut self) {
-    if let Some(mask) = self.mask {
-      crate::mask::unmask(self.payload.to_mut(), mask);
-    }
-  }
-
-  /// Formats the frame header into the head buffer. Returns the size of the length field.
-  ///
-  /// # Panics
-  ///
-  /// This method panics if the head buffer is not at least n-bytes long, where n is the size of the length field (0, 2, 4, or 10)
-  pub fn fmt_head(&mut self, head: &mut [u8]) -> usize {
-    head[0] = (self.fin as u8) << 7 | (self.opcode as u8);
-
+impl<'a> Frame<'a> {
+  pub fn fmt_head(&self, head: &mut [u8]) -> usize {
     let len = self.payload.len();
+    head[0] = self.opcode as u8;
+    if self.fin {
+      head[0] |= 0x80;
+    }
+
     let size = if len < 126 {
       head[1] = len as u8;
       2
@@ -290,18 +149,15 @@ impl<'f> Frame<'f> {
     stream: &mut S,
   ) -> Result<(), std::io::Error>
   where
-    S: AsyncWriteExt + Unpin,
+    S: IoBufMut,
   {
-    use std::io::IoSlice;
-
     let mut head = [0; MAX_HEAD_SIZE];
     let size = self.fmt_head(&mut head);
-
     let total = size + self.payload.len();
 
     let mut b = [IoSlice::new(&head[..size]), IoSlice::new(&self.payload)];
 
-    let mut n = stream.write_vectored(&b).await?;
+    let mut n = stream.writev(&b).await?.0;
     if n == total {
       return Ok(());
     }
@@ -309,19 +165,20 @@ impl<'f> Frame<'f> {
     // Slightly more optimized than (unstable) write_all_vectored for 2 iovecs.
     while n <= size {
       b[0] = IoSlice::new(&head[n..size]);
-      n += stream.write_vectored(&b).await?;
+      n += stream.writev(&b).await?.0;
     }
 
     // Header out of the way.
     if n < total && n > size {
-      stream.write_all(&self.payload[n - size..]).await?;
+      let payload_offset = n - size;
+      stream.write_all(&self.payload[payload_offset..]).await?;
     }
 
     Ok(())
   }
 
   /// Writes the frame to the buffer and returns a slice of the buffer containing the frame.
-  pub fn write<'a>(&mut self, buf: &'a mut Vec<u8>) -> &'a [u8] {
+  pub fn write<'b>(&mut self, buf: &'b mut Vec<u8>) -> &'b [u8] {
     fn reserve_enough(buf: &mut Vec<u8>, len: usize) {
       if buf.len() < len {
         buf.resize(len, 0);
@@ -333,6 +190,110 @@ impl<'f> Frame<'f> {
     let size = self.fmt_head(buf);
     buf[size..size + len].copy_from_slice(&self.payload);
     &buf[..size + len]
+  }
+
+  /// Optimized writing for multiple buffers using vectored IO
+  pub async fn write_vectored<S>(
+    &mut self,
+    stream: &mut S,
+  ) -> Result<(), std::io::Error>
+  where
+    S: IoBufMut,
+  {
+    let mut head = [0; MAX_HEAD_SIZE];
+    let size = self.fmt_head(&mut head);
+
+    let total_len = size + self.payload.len();
+    let mut iovec = [IoSlice::new(&head[..size]), IoSlice::new(&self.payload)];
+
+    let mut written = 0;
+    while written < total_len {
+      let (res, _) = stream.writev(&iovec).await;
+      let n = res?;
+      written += n;
+
+      if written < size {
+        iovec[0] = IoSlice::new(&head[written..size]);
+      } else if written < total_len {
+        let payload_offset = written.saturating_sub(size);
+        iovec[1] = IoSlice::new(&self.payload[payload_offset..]);
+      }
+    }
+
+    Ok(())
+  }
+
+  pub fn text(payload: Payload<'a>) -> Self {
+    Self {
+      fin: true,
+      opcode: OpCode::Text,
+      mask: None,
+      payload,
+    }
+  }
+
+  pub fn binary(payload: Payload<'a>) -> Self {
+    Self {
+      fin: true,
+      opcode: OpCode::Binary,
+      mask: None,
+      payload,
+    }
+  }
+
+  pub fn close(code: u16, reason: &[u8]) -> Self {
+    let mut payload = Vec::with_capacity(2 + reason.len());
+    payload.extend_from_slice(&code.to_be_bytes());
+    payload.extend_from_slice(reason);
+
+    Self {
+      fin: true,
+      opcode: OpCode::Close,
+      mask: None,
+      payload: payload.into(),
+    }
+  }
+
+  pub fn close_raw(payload: Payload<'a>) -> Self {
+    Self {
+      fin: true,
+      opcode: OpCode::Close,
+      mask: None,
+      payload,
+    }
+  }
+
+  pub fn pong(payload: Payload<'a>) -> Self {
+    Self {
+      fin: true,
+      opcode: OpCode::Pong,
+      mask: None,
+      payload,
+    }
+  }
+
+  pub fn is_utf8(&self) -> bool {
+    #[cfg(feature = "simd")]
+    return simdutf8::basic::from_utf8(&self.payload).is_ok();
+
+    #[cfg(not(feature = "simd"))]
+    return std::str::from_utf8(&self.payload).is_ok();
+  }
+
+  pub fn mask(&mut self) {
+    if let Some(mask) = self.mask {
+      crate::mask::unmask(self.payload.to_mut(), mask);
+    } else {
+      let mask: [u8; 4] = rand::random();
+      crate::mask::unmask(self.payload.to_mut(), mask);
+      self.mask = Some(mask);
+    }
+  }
+
+  pub fn unmask(&mut self) {
+    if let Some(mask) = self.mask {
+      crate::mask::unmask(self.payload.to_mut(), mask);
+    }
   }
 }
 
@@ -353,3 +314,4 @@ repr_u8! {
 pub fn is_control(opcode: OpCode) -> bool {
   matches!(opcode, OpCode::Close | OpCode::Ping | OpCode::Pong)
 }
+
