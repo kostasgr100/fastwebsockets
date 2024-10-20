@@ -263,75 +263,75 @@ impl<'f, S> WebSocket<S> {
         (self.stream, self.read_half, self.write_half)
     }
 
-/// Sets whether to use vectored writes. This option does not guarantee that vectored writes will be always used.
-///
-/// Default: `true`
-pub fn set_writev(&mut self, vectored: bool) {
-    self.write_half.vectored = vectored;
-}
+    /// Sets whether to use vectored writes. This option does not guarantee that vectored writes will be always used.
+    ///
+    /// Default: `true`
+    pub fn set_writev(&mut self, vectored: bool) {
+        self.write_half.vectored = vectored;
+    }
 
-pub fn set_writev_threshold(&mut self, threshold: usize) {
-    self.read_half.writev_threshold = threshold;
-    self.write_half.writev_threshold = threshold;
-}
+    pub fn set_writev_threshold(&mut self, threshold: usize) {
+        self.read_half.writev_threshold = threshold;
+        self.write_half.writev_threshold = threshold;
+    }
 
-/// Sets whether to automatically close the connection when a close frame is received. When set to `false`, the application will have to manually send close frames.
-///
-/// Default: `true`
-pub fn set_auto_close(&mut self, auto_close: bool) {
-    self.read_half.auto_close = auto_close;
-}
+    /// Sets whether to automatically close the connection when a close frame is received. When set to `false`, the application will have to manually send close frames.
+    ///
+    /// Default: `true`
+    pub fn set_auto_close(&mut self, auto_close: bool) {
+        self.read_half.auto_close = auto_close;
+    }
 
-/// Sets whether to automatically send a pong frame when a ping frame is received.
-///
-/// Default: `true`
-pub fn set_auto_pong(&mut self, auto_pong: bool) {
-    self.read_half.auto_pong = auto_pong;
-}
+    /// Sets whether to automatically send a pong frame when a ping frame is received.
+    ///
+    /// Default: `true`
+    pub fn set_auto_pong(&mut self, auto_pong: bool) {
+        self.read_half.auto_pong = auto_pong;
+    }
 
-/// Sets the maximum message size in bytes. If a message is received that is larger than this, the connection will be closed.
-///
-/// Default: 64 MiB
-pub fn set_max_message_size(&mut self, max_message_size: usize) {
-    self.read_half.max_message_size = max_message_size;
-}
+    /// Sets the maximum message size in bytes. If a message is received that is larger than this, the connection will be closed.
+    ///
+    /// Default: 64 MiB
+    pub fn set_max_message_size(&mut self, max_message_size: usize) {
+        self.read_half.max_message_size = max_message_size;
+    }
 
-/// Sets whether to automatically apply the mask to the frame payload.
-///
-/// Default: `true`
-pub fn set_auto_apply_mask(&mut self, auto_apply_mask: bool) {
-    self.read_half.auto_apply_mask = auto_apply_mask;
-    self.write_half.auto_apply_mask = auto_apply_mask;
-}
+    /// Sets whether to automatically apply the mask to the frame payload.
+    ///
+    /// Default: `true`
+    pub fn set_auto_apply_mask(&mut self, auto_apply_mask: bool) {
+        self.read_half.auto_apply_mask = auto_apply_mask;
+        self.write_half.auto_apply_mask = auto_apply_mask;
+    }
 
-pub fn is_closed(&self) -> bool {
-    self.write_half.closed
-}
+    pub fn is_closed(&self) -> bool {
+        self.write_half.closed
+    }
 
-/// Writes a frame to the stream.
-///
-/// # Example
-///
-/// ```
-/// use fastwebsockets::{WebSocket, Frame, OpCode};
-/// use tokio_uring::net::TcpStream;
-/// use anyhow::Result;
-///
-/// async fn send(
-///   ws: &mut WebSocket<TcpStream>
-/// ) -> Result<()> {
-///   let mut frame = Frame::binary(vec![0x01, 0x02, 0x03].into());
-///   ws.write_frame(frame).await?;
-///   Ok(())
-/// }
-/// ```
-pub async fn write_frame(&mut self, frame: Frame<'f>) -> Result<(), WebSocketError>
-where
-    S: AsyncBufReadExt + AsyncWriteExt + Unpin,
-{
-    self.write_half.write_frame(&mut self.stream, frame).await?;
-    Ok(())
-}
+    /// Writes a frame to the stream.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use fastwebsockets::{WebSocket, Frame, OpCode};
+    /// use tokio_uring::net::TcpStream;
+    /// use anyhow::Result;
+    ///
+    /// async fn send(
+    ///   ws: &mut WebSocket<TcpStream>
+    /// ) -> Result<()> {
+    ///   let mut frame = Frame::binary(vec![0x01, 0x02, 0x03].into());
+    ///   ws.write_frame(frame).await?;
+    ///   Ok(())
+    /// }
+    /// ```
+    pub async fn write_frame(&mut self, frame: Frame<'f>) -> Result<(), WebSocketError>
+    where
+        S: AsyncBufReadExt + AsyncWriteExt + Unpin,
+    {
+        self.write_half.write_frame(&mut self.stream, frame).await?;
+        Ok(())
+    }
 
 /// Reads a frame from the stream.
 ///
@@ -359,23 +359,24 @@ where
 ///   Ok(())
 /// }
 /// ```
-pub async fn read_frame(&mut self) -> Result<Frame<'f>, WebSocketError>
-where
-    S: AsyncBufReadExt + AsyncWriteExt + Unpin,
-{
-    loop {
-        let (res, obligated_send) = self.read_half.read_frame_inner(&mut self.stream).await;
-        let is_closed = self.write_half.closed;
-        if let Some(frame) = obligated_send {
-            if !is_closed {
-                self.write_half.write_frame(&mut self.stream, frame).await?;
+    pub async fn read_frame(&mut self) -> Result<Frame<'f>, WebSocketError>
+    where
+        S: AsyncBufReadExt + AsyncWriteExt + Unpin,
+    {
+        loop {
+            let (res, obligated_send) = self.read_half.read_frame_inner(&mut self.stream).await;
+            let is_closed = self.write_half.closed;
+            if let Some(frame) = obligated_send {
+                if !is_closed {
+                    self.write_half.write_frame(&mut self.stream, frame).await?;
+                }
             }
-        }
-        if let Some(frame) = res? {
-            if is_closed && frame.opcode != OpCode::Close {
-                return Err(WebSocketError::ConnectionClosed);
+            if let Some(frame) = res? {
+                if is_closed && frame.opcode != OpCode::Close {
+                    return Err(WebSocketError::ConnectionClosed);
+                }
+                break Ok(frame);
             }
-            break Ok(frame);
         }
     }
 }
