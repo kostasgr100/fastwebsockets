@@ -14,18 +14,21 @@
 
 use tokio_uring::buf::IoBufMut;
 use tokio_uring::net::TcpStream;
-use tokio_uring::io::{self, AsyncBufReadExt, AsyncWriteExt};
+use tokio_uring::fs::File;
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::Stream;
-use hyper::header::{HeaderValue, UPGRADE, CONNECTION};
-use hyper::http::Request;
+use hyper::::body::Incoming;
 use hyper::upgrade::Upgraded;
-use hyper::{Body, Response, StatusCode};
+use hyper::{Request, Response, StatusCode};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+
 use sha1::{Digest, Sha1};
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use crate::Role;
+use crate::WebSocket;
 use crate::WebSocketError;
 use rand::Rng;
 
