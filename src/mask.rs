@@ -158,6 +158,8 @@ mod tests {
     }
   }
 
+use rand;  
+  
   #[test]
   fn length_variation_unmask_2() {
     for len in &[0, 2, 3, 8, 16, 18, 31, 32, 40] {
