@@ -17,6 +17,7 @@ use hyper::upgrade::Upgraded;
 use hyper::Request;
 use hyper::Response;
 use hyper::StatusCode;
+use rand;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -78,7 +79,7 @@ use crate::WebSocketError;
 ///   Fut::Output: Send + 'static,
 /// {
 ///   fn execute(&self, fut: Fut) {
-///     tokio::task::spawn(fut);
+///     tokio_uring::spawn(fut);
 ///   }
 /// }
 /// ```
