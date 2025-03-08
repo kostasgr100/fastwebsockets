@@ -122,6 +122,8 @@ fn unmask_fallback(buf: &mut [u8], mask: [u8; 4]) {
   unmask_easy(suffix, mask_u32.to_ne_bytes());
 }
 
+use rand;
+
 /// Unmask a payload using the given 4-byte mask.
 #[inline]
 pub fn unmask(payload: &mut [u8], mask: [u8; 4]) {
@@ -158,8 +160,6 @@ mod tests {
     }
   }
 
-use rand;  
-  
   #[test]
   fn length_variation_unmask_2() {
     for len in &[0, 2, 3, 8, 16, 18, 31, 32, 40] {
