@@ -53,7 +53,7 @@ async fn server_upgrade(
 ) -> Result<Response<Empty<Bytes>>> {
   let (response, fut) = upgrade::upgrade(&mut req)?;
 
-  tokio::spawn(async move {
+  tokio_uring::spawn(async move {
     if let Err(e) = handle_client(fut).await {
       eprintln!("Error in websocket connection: {}", e);
     }
@@ -81,7 +81,6 @@ fn tls_acceptor() -> Result<TlsAcceptor> {
   Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
   let acceptor = tls_acceptor()?;
   let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -90,7 +89,7 @@ async fn main() -> Result<()> {
     let (stream, _) = listener.accept().await?;
     println!("Client connected");
     let acceptor = acceptor.clone();
-    tokio::spawn(async move {
+    tokio_uring::spawn(async move {
       let stream = acceptor.accept(stream).await.unwrap();
       let io = hyper_util::rt::TokioIo::new(stream);
       let conn_fut = http1::Builder::new()
