@@ -12,10 +12,10 @@ use hyper::header::UPGRADE;
 use hyper::upgrade::Upgraded;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
-use tokio_rustls::rustls::ClientConfig;
-use tokio_rustls::rustls::OwnedTrustAnchor;
-use tokio_rustls::TlsConnector;
+use tokio_uring::net::TcpStream;
+use rustls::{pki_types::ServerName, ClientConfig, RootCertStore};
+use webpki_roots::TLS_SERVER_ROOTS;
+use tokio_uring_rustls::TlsConnector;
 
 struct SpawnExecutor;
 
@@ -25,27 +25,18 @@ where
   Fut::Output: Send + 'static,
 {
   fn execute(&self, fut: Fut) {
-    tokio::task::spawn(fut);
+    tokio_uring::spawn(fut);
   }
 }
 
 fn tls_connector() -> Result<TlsConnector> {
-  let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-  root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
-    |ta| {
-      OwnedTrustAnchor::from_subject_spki_name_constraints(
-        ta.subject,
-        ta.spki,
-        ta.name_constraints,
-      )
-    },
-  ));
+  let root_store = RootCertStore {
+        roots: TLS_SERVER_ROOTS.into(),
+  };
 
   let config = ClientConfig::builder()
-    .with_safe_defaults()
-    .with_root_certificates(root_store)
-    .with_no_client_auth();
+      .with_root_certificates(root_store)
+      .with_no_client_auth();
 
   Ok(TlsConnector::from(Arc::new(config)))
 }
@@ -57,7 +48,7 @@ async fn connect(domain: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
   let tcp_stream = TcpStream::connect(&addr).await?;
   let tls_connector = tls_connector().unwrap();
   let domain =
-    tokio_rustls::rustls::ServerName::try_from(domain).map_err(|_| {
+    ServerName::try_from(domain).map_err(|_| {
       std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid dnsname")
     })?;
 
@@ -81,7 +72,6 @@ async fn connect(domain: &str) -> Result<FragmentCollector<TokioIo<Upgraded>>> {
   Ok(FragmentCollector::new(ws))
 }
 
-#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
   let domain = "data-stream.binance.com";
   let mut ws = connect(domain).await?;
