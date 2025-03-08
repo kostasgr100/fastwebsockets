@@ -24,7 +24,7 @@ use hyper::service::service_fn;
 use hyper::Request;
 use hyper::Response;
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
+use tokio_uring::net::TcpListener;
 
 use fastwebsockets::handshake;
 use fastwebsockets::WebSocket;
@@ -32,7 +32,7 @@ use hyper::header::CONNECTION;
 use hyper::header::UPGRADE;
 use hyper::upgrade::Upgraded;
 use std::future::Future;
-use tokio::net::TcpStream;
+use tokio_uring::net::TcpStream;
 
 const N_CLIENTS: usize = 20;
 
@@ -64,7 +64,7 @@ async fn server_upgrade(
     .unwrap()
     .parse()
     .unwrap();
-  tokio::spawn(async move {
+  tokio_uring::spawn(async move {
     handle_client(client_id, fut).await.unwrap();
   });
 
@@ -112,10 +112,10 @@ async fn start_client(client_id: usize) -> Result<()> {
 async fn test() -> Result<()> {
   let listener = TcpListener::bind("127.0.0.1:8080").await?;
   println!("Server started, listening on {}", "127.0.0.1:8080");
-  tokio::spawn(async move {
+  tokio_uring::spawn(async move {
     loop {
       let (stream, _) = listener.accept().await.unwrap();
-      tokio::spawn(async move {
+      tokio_uring::spawn(async move {
         let io = TokioIo::new(stream);
         let conn_fut = http1::Builder::new()
           .serve_connection(io, service_fn(server_upgrade))
@@ -126,7 +126,7 @@ async fn test() -> Result<()> {
   });
   let mut tasks = Vec::with_capacity(N_CLIENTS);
   for client in 0..N_CLIENTS {
-    tasks.push(tokio::spawn(start_client(client)));
+    tasks.push(tokio_uring::spawn(start_client(client)));
   }
   for handle in tasks {
     handle.await.unwrap().unwrap();
@@ -142,6 +142,6 @@ where
   Fut::Output: Send + 'static,
 {
   fn execute(&self, fut: Fut) {
-    tokio::task::spawn(fut);
+    tokio_uring::spawn(fut);
   }
 }
