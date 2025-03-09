@@ -1,3 +1,4 @@
+
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper::header::{CONNECTION, UPGRADE};
@@ -82,18 +83,18 @@ impl UringStream for TlsStream<ClientConnection> {
 ///     }
 /// }
 /// ```
+
 pub async fn client_uring<E, B>(
     executor: &E,
     request: Request<B>,
-    mut socket: TlsStream<ClientConnection>,
-) -> Result<(WebSocket<TlsStream<ClientConnection>>, Response<Incoming>), WebSocketError>
+    mut socket: tokio_uring_rustls::TlsStream<rustls::ClientConnection>,
+) -> Result<(WebSocket<tokio_uring_rustls::TlsStream<rustls::ClientConnection>>, Response<Incoming>), WebSocketError>
 where
     E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
     B: hyper::body::Body + 'static + Send,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    // Convert hyper::Request to raw HTTP request string
     let uri = request.uri();
     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let host = uri.host().unwrap_or("localhost");
@@ -112,11 +113,9 @@ where
     );
     let request_bytes = Bytes::from(request_str);
 
-    // Send the handshake request
     let (res, _) = socket.write(request_bytes).await;
     res.map_err(|e| WebSocketError::IoError(e.to_string()))?;
 
-    // Read the HTTP response incrementally
     let mut response_buf = Vec::new();
     let mut temp_buf = vec![0u8; 1024];
     loop {
@@ -132,7 +131,6 @@ where
         temp_buf = buf;
     }
 
-    // Split headers and leftover data
     let header_end = response_buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -140,7 +138,6 @@ where
         .ok_or(WebSocketError::HTTPError(hyper::error::ErrorKind::Parse.into()))?;
     let header_bytes = &response_buf[..header_end];
 
-    // Parse and verify the response (simplified, no Incoming body)
     let response_str = std::str::from_utf8(header_bytes)
         .map_err(|_| WebSocketError::IoError("Invalid UTF-8 in handshake response".into()))?;
     if !response_str.contains("HTTP/1.1 101") {
@@ -152,21 +149,24 @@ where
         return Err(WebSocketError::InvalidUpgradeHeader);
     }
 
-    // Create a dummy Response (no body needed for WebSocket)
     let response = Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Incoming::new_empty()) // Simplified, no body parsing
+        .body(Incoming::new_empty())
         .unwrap();
 
-    // Transition to WebSocket
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
     ws.set_auto_pong(true);
     ws.set_writev(false);
 
     Ok((ws, response))
+}
+
+pub fn generate_key() -> String {
+    let r: [u8; 16] = rand::random();
+    STANDARD.encode(r)
 }
 
 /// Generate a random key for the `Sec-WebSocket-Key` header.
