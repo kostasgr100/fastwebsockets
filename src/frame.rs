@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use core::ops::Deref;
 
 use crate::{WebSocketError, UringStream};
@@ -111,10 +111,10 @@ impl<'a, const N: usize> PartialEq<&'_ [u8; N]> for Payload<'a> {
 }
 
 pub struct Frame<'f> {
-    pub fin: bool,
-    pub opcode: OpCode,
-    mask: Option<[u8; 4]>,
-    pub payload: Payload<'f>,
+    pub fin: bool,           // Ensure pub for consistency
+    pub opcode: OpCode,      // Ensure pub
+    pub mask: Option<[u8; 4]>, // Change from private to pub
+    pub payload: Payload<'f>,  // Ensure pub
 }
 
 const MAX_HEAD_SIZE: usize = 16;
@@ -170,7 +170,7 @@ impl<'f> Frame<'f> {
         }
     }
 
-    pub fn fmt_head(&mut self, head: &mut [u8]) -> usize {
+    pub fn fmt_head(&self, head: &mut [u8]) -> usize {
         head[0] = (self.fin as u8) << 7 | (self.opcode as u8);
         let len = self.payload.len();
         let size = if len < 126 {
