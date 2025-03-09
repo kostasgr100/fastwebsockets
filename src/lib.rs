@@ -13,8 +13,8 @@ mod mask;
 pub mod upgrade;
 
 use bytes::{Buf, Bytes, BytesMut};
+use std::future::Future;  // Moved here from below, outside feature gate
 #[cfg(feature = "unstable-split")]
-use std::future::Future;
 
 pub use crate::close::CloseCode;
 pub use crate::error::WebSocketError;
@@ -63,15 +63,15 @@ pub struct WebSocketWrite<S> {
 
 // Custom trait for tokio-uring streams
 pub trait UringStream {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> + Send;
-    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> + Send;
+    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)>;  // Removed + Send
+    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)>;     // Removed + Send
 }
 
 impl UringStream for tokio_uring_rustls::TlsStream<rustls::ClientConnection> {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> + Send {
+    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> {
         self.read(buf)
     }
-    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> + Send {
+    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> {
         self.write(buf)
     }
 }
@@ -184,7 +184,7 @@ where
     S: UringStream,
 {
     let (res, _) = stream.write(Bytes::new()).await;
-    res.map_err(WebSocketError::IoError)
+    res.map(|_| ()).map_err(WebSocketError::IoError)  // Convert usize to ()
 }
 
 pub struct WebSocket<S> {
@@ -517,13 +517,13 @@ impl WriteHalf {
 impl<'a> Frame<'a> {
     pub async fn writev_uring<S: UringStream>(&self, stream: &mut S) -> Result<(), WebSocketError> {
         let header = self.make_header();
-        let mut payload = self.payload.to_vec();
-        if let Some(mask) = self.mask {
-            mask::apply_mask(&mut payload, mask);
+        let mut payload = self.payload.to_vec();  // Convert to owned Vec<u8> directly
+        if self.mask.is_some() {  // Check if mask exists
+            crate::mask::unmask(&mut payload, self.mask.unwrap());  // Apply mask
         }
         let (res, _) = stream.write(header.to_vec().into()).await;
         res.map_err(WebSocketError::IoError)?;
-        let (res, _) = stream.write(payload.into()).await;
+        let (res, _) = stream.write(payload.into()).await;  // payload is already Vec<u8>
         res.map_err(WebSocketError::IoError)?;
         Ok(())
     }
