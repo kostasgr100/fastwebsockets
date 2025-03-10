@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use bytes::Bytes;
 use std::io;
-use http_body_util::Empty;
+use http_body_util::{Empty, BodyExt}; // Added BodyExt
 
 use crate::{Role, WebSocket, WebSocketError};
 
@@ -107,8 +107,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Empty::<Bytes>::new().boxed()) // Convert to Incoming
-        .map_err(|e| WebSocketError::HTTPError(e.into()))?; // Convert http::Error to hyper::Error
+        .body(Empty::<Bytes>::new().boxed()) // Use BodyExt
+        .map_err(|e| WebSocketError::HTTPError(e.into()))?;
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
