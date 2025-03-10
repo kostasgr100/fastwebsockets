@@ -34,7 +34,7 @@ pub async fn client_uring<E, B>(
     executor: &E,
     request: Request<B>,
     mut socket: TlsStream<ClientConnection>,
-) -> Result<(WebSocket<TlsStream<ClientConnection>>, Response<Incoming>), WebSocketError>
+) -> Result<(WebSocket<TlsStream<ClientConnection>>, Response<BoxBody<Bytes, hyper::Error>>), WebSocketError>
 where
     E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()>>>>,
     B: hyper::body::Body + 'static,
@@ -109,7 +109,7 @@ where
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
         .body(Empty::<Bytes>::new().map_err(|_| unreachable!()).boxed())
-        .map_err(|e| WebSocketError::HTTPError(hyper::Error::new(e)))?;
+        .map_err(|e| WebSocketError::HTTPError(hyper::Error::from(e)))?;
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
