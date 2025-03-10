@@ -9,7 +9,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use std::io;
 use http_body_util::{Empty, BodyExt};
-use http_body_util::combinators::BoxBody; // Correct import
+use http_body_util::combinators::BoxBody;
 
 use crate::{Role, WebSocket, WebSocketError};
 
@@ -108,8 +108,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Empty::<Bytes>::new().map_err(|_| unreachable!()).boxed()) // Matches Incoming
-        .map_err(|e| WebSocketError::HTTPError(hyper::Error::new_user(e)))?; // Simplified error handling
+        .body(Empty::<Bytes>::new().map_err(|_| unreachable!()).boxed())
+        .map_err(|e| WebSocketError::HTTPError(hyper::Error::new(e)))?;
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
@@ -159,7 +159,7 @@ where
 
 fn verify(response: &Response<Incoming>) -> Result<(), WebSocketError> {
     if response.status() != StatusCode::SWITCHING_PROTOCOLS {
-        return Err(WebSocketError::InvalidStatusCode(response.status aceite.as_u16()));
+        return Err(WebSocketError::InvalidStatusCode(response.status().as_u16()));
     }
     let headers = response.headers();
     if !headers.get(UPGRADE).and_then(|h| h.to_str().ok()).map(|h| h.eq_ignore_ascii_case("websocket")).unwrap_or(false) {
