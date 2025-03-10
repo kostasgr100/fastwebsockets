@@ -88,19 +88,18 @@ pub struct UpgradeFut {
     inner: hyper::upgrade::OnUpgrade,
 }
 
-// Implement UringStream for TokioIo<Upgraded>
 impl UringStream for hyper_util::rt::TokioIo<hyper::upgrade::Upgraded> {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> {
+    fn read(&mut self, mut buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> {
         async move {
-            let n = self.read(&mut buf[..]).await?;
-            Ok((n, buf))
+            let res = AsyncReadExt::read(self, &mut buf).await; // Disambiguate
+            (res, buf)
         }
     }
 
     fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> {
         async move {
-            let n = self.write(&buf).await?;
-            Ok((n, buf))
+            let res = AsyncWriteExt::write(self, &buf).await; // Disambiguate
+            (res, buf)
         }
     }
 }
