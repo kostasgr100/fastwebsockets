@@ -15,34 +15,29 @@ use crate::{Role, WebSocket, WebSocketError};
 use tokio_uring_rustls::TlsStream;
 use rustls::ClientConnection;
 
-// Define UringStream trait for tokio-uring streams
-pub trait UringStream: Send + 'static {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> + Send;
-    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> + Send;
+// Remove Send bound since tokio-uring is single-threaded
+pub trait UringStream: 'static {
+    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)>;
+    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)>;
 }
 
-// Implement UringStream for TlsStream
 impl UringStream for TlsStream<ClientConnection> {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> + Send {
+    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> {
         self.read(buf)
     }
-    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> + Send {
+    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> {
         self.write(buf)
     }
 }
 
-/// Perform the client handshake for tokio-uring streams.
-///
-/// This function performs the WebSocket handshake over a tokio-uring TlsStream.
-/// It takes an executor compatible with tokio-uring and a hyper Request.
 pub async fn client_uring<E, B>(
     executor: &E,
     request: Request<B>,
     mut socket: TlsStream<ClientConnection>,
 ) -> Result<(WebSocket<TlsStream<ClientConnection>>, Response<Incoming>), WebSocketError>
 where
-    E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    B: hyper::body::Body + 'static + Send,
+    E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()>>>>, // Relaxed Send bound
+    B: hyper::body::Body + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
@@ -88,7 +83,10 @@ where
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|pos| pos + 4)
-        .ok_or(WebSocketError::HTTPError(hyper::Error::new()))?;
+        .ok_or(WebSocketError::HTTPError(hyper::Error::from(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Failed to parse HTTP headers",
+        ))))?;
     let header_bytes = &response_buf[..header_end];
 
     let response_str = std::str::from_utf8(header_bytes)
@@ -108,8 +106,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Incoming::empty()) // Updated to use empty()
-        .map_err(WebSocketError::HTTPError)?;
+        .body(Empty::<Bytes>::new()) // Use Empty from http-body-util
+        .map_err(|e| WebSocketError::HTTPError(hyper::Error::from(e)))?; // Convert hyper::http::Error
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
@@ -119,15 +117,11 @@ where
     Ok((ws, response))
 }
 
-/// Generate a random key for the `Sec-WebSocket-Key` header.
 pub fn generate_key() -> String {
     let r: [u8; 16] = rand::random();
     STANDARD.encode(r)
 }
 
-// Remove duplicate generate_key definitions
-
-// Tokio-based client function (optional, only if you need Tokio support)
 #[cfg(feature = "tokio")]
 pub async fn client<S, E, B>(
     executor: &E,
@@ -161,7 +155,6 @@ where
     }
 }
 
-// Verify function (unchanged)
 fn verify(response: &Response<Incoming>) -> Result<(), WebSocketError> {
     if response.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Err(WebSocketError::InvalidStatusCode(response.status().as_u16()));
