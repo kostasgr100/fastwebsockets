@@ -10,11 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::future::Future;
 
-use crate::{Role, WebSocket, WebSocketError, UringStream};
-
-// Note: We'll assume a tokio-uring compatible stream for the upgrade.
-// For simplicity, this uses tokio_uring::net::TcpStream directly.
-// If TLS is needed server-side, you'd wrap it with tokio_uring_rustls::TlsStream.
+use crate::{Role, WebSocket, WebSocketError, handshake::UringStream};
 
 fn sec_websocket_protocol(key: &[u8]) -> String {
     let mut sha1 = Sha1::new();
@@ -91,16 +87,7 @@ pub struct UpgradeFut {
     inner: hyper::upgrade::OnUpgrade,
 }
 
-// Implement UringStream for hyper::upgrade::Upgraded (requires a shim)
-impl UringStream for tokio_uring::net::TcpStream {
-    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> + Send {
-        self.read(buf)
-    }
-    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> + Send {
-        self.write(buf)
-    }
-}
-
+// Use tokio-uring TcpStream only where applicable; server uses TokioIo
 pub fn upgrade<B>(
     mut request: impl std::borrow::BorrowMut<Request<B>>,
 ) -> Result<(Response<Empty<Bytes>>, UpgradeFut), Error> {
@@ -177,23 +164,19 @@ fn trim_end(data: &[u8]) -> &[u8] {
     }
 }
 
-impl std::future::Future for UpgradeFut {
-    type Output = Result<WebSocket<tokio_uring::net::TcpStream>, Error>;
+impl Future for UpgradeFut {
+    type Output = Result<WebSocket<hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>>, Error>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let upgraded = match this.inner.poll(cx) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(x) => x,
+            Poll::Ready(Ok(upgraded)) => upgraded,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
         };
-        let tokio_stream = upgraded?;
-        // Convert hyper::upgrade::Upgraded to tokio_uring::net::TcpStream
-        // This requires unsafe or a tokio-uring-specific upgrade mechanism
-        let tcp_stream = unsafe {
-            tokio_uring::net::TcpStream::from_raw_fd(
-                tokio_stream.into_inner().into_std()?.into_raw_fd(),
-            )
-        };
-        Poll::Ready(Ok(WebSocket::after_handshake(tcp_stream, Role::Server)))
+        Poll::Ready(Ok(WebSocket::after_handshake(
+            hyper_util::rt::TokioIo::new(upgraded),
+            Role::Server,
+        )))
     }
 }
