@@ -109,7 +109,11 @@ where
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
         .body(Empty::<Bytes>::new().map_err(|_| unreachable!()).boxed())
-        .map_err(|e| WebSocketError::HTTPError(hyper::Error::from(e)))?;
+        .map_err(|e| {
+            WebSocketError::HTTPError(hyper::Error::new(
+                Box::<dyn std::error::Error + Send + Sync>::from(e),
+            ))
+        })?;
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
