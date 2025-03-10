@@ -8,14 +8,14 @@ use std::future::Future;
 use std::pin::Pin;
 use bytes::Bytes;
 use std::io;
+use http_body_util::Empty; // Added import
 
 use crate::{Role, WebSocket, WebSocketError};
 
-// Tokio-uring specific imports
 use tokio_uring_rustls::TlsStream;
 use rustls::ClientConnection;
 
-// Remove Send bound since tokio-uring is single-threaded
+// Single-threaded UringStream
 pub trait UringStream: 'static {
     fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)>;
     fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)>;
@@ -36,7 +36,7 @@ pub async fn client_uring<E, B>(
     mut socket: TlsStream<ClientConnection>,
 ) -> Result<(WebSocket<TlsStream<ClientConnection>>, Response<Incoming>), WebSocketError>
 where
-    E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()>>>>, // Relaxed Send bound
+    E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()>>>>,
     B: hyper::body::Body + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -83,10 +83,9 @@ where
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|pos| pos + 4)
-        .ok_or(WebSocketError::HTTPError(hyper::Error::from(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Failed to parse HTTP headers",
-        ))))?;
+        .ok_or_else(|| {
+            WebSocketError::HTTPError(hyper::Error::new(hyper::error::Kind::Parse)) // Use Parse error
+        })?;
     let header_bytes = &response_buf[..header_end];
 
     let response_str = std::str::from_utf8(header_bytes)
@@ -106,8 +105,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Empty::<Bytes>::new()) // Use Empty from http-body-util
-        .map_err(|e| WebSocketError::HTTPError(hyper::Error::from(e)))?; // Convert hyper::http::Error
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| WebSocketError::HTTPError(hyper::Error::new(e.into())))?; // Convert http::Error
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
