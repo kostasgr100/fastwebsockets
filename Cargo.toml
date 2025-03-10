@@ -38,7 +38,6 @@ path = "examples/echo_server_split.rs"
 required-features = ["upgrade"]
 
 [dependencies]
-tokio = { version = "1.43.0", default-features = false, features = ["io-util"] }
 simdutf8 = { version = "0.1.5", optional = true }
 hyper-util = { version = "0.1.10", features = ["tokio"], optional = true }
 http-body-util = { version = "0.1.2", optional = true }
@@ -55,6 +54,7 @@ rand = "0.9"
 thiserror = "2.0.12"
 bytes = "1.10.1"
 tokio-uring = { git = "https://github.com/kostasgr100/tokio-uring.git", branch = "master" }
+tokio-uring-rustls = { git = "https://github.com/kostasgr100/tokio-uring-rustls.git", branch = "main" }
 rustls = "0.23.23"
 
 # Axum integration
@@ -78,7 +78,6 @@ unstable-split = []
 with_axum = ["axum-core", "http", "async-trait"]
 
 [dev-dependencies]
-tokio = { version = "1.43.0", features = ["full", "macros"] }
 tokio-uring-rustls = { git = "https://github.com/kostasgr100/tokio-uring-rustls.git", branch = "main" }
 rustls-pemfile = "2.2.0"
 hyper-util = { version = "0.1.10", features = ["tokio"] }
