@@ -9,6 +9,7 @@ use sha1::Sha1;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::future::Future;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{Role, WebSocket, WebSocketError, handshake::UringStream};
 
@@ -87,7 +88,23 @@ pub struct UpgradeFut {
     inner: hyper::upgrade::OnUpgrade,
 }
 
-// Use tokio-uring TcpStream only where applicable; server uses TokioIo
+// Implement UringStream for TokioIo<Upgraded>
+impl UringStream for hyper_util::rt::TokioIo<hyper::upgrade::Upgraded> {
+    fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)> {
+        async move {
+            let n = self.read(&mut buf[..]).await?;
+            Ok((n, buf))
+        }
+    }
+
+    fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)> {
+        async move {
+            let n = self.write(&buf).await?;
+            Ok((n, buf))
+        }
+    }
+}
+
 pub fn upgrade<B>(
     mut request: impl std::borrow::BorrowMut<Request<B>>,
 ) -> Result<(Response<Empty<Bytes>>, UpgradeFut), Error> {
