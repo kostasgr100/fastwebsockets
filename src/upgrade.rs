@@ -8,6 +8,7 @@ use sha1::Digest;
 use sha1::Sha1;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::future::Future;
 
 use crate::{Role, WebSocket, WebSocketError, UringStream};
 
