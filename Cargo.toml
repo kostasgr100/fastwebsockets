@@ -5,7 +5,7 @@ version = "0.10.0"
 authors = ["Divy Srivastava <dj.srivastava23@gmail.com>"]
 license = "Apache-2.0"
 edition = "2021"
-repository = "https://github.com/kostasgr100/fastwebsockets"
+repository = "https://github.com/denoland/fastwebsockets"
 
 [[example]]
 name = "echo_server"
@@ -38,10 +38,15 @@ path = "examples/echo_server_split.rs"
 required-features = ["upgrade"]
 
 [dependencies]
+tokio = { version = "1.43.0", default-features = false, features = ["io-util"] }
 simdutf8 = { version = "0.1.5", optional = true }
 hyper-util = { version = "0.1.10", features = ["tokio"], optional = true }
 http-body-util = { version = "0.1.2", optional = true }
-hyper = { version = "1", features = ["http1", "server", "client"], optional = true }
+hyper = { version = "1", features = [
+    "http1",
+    "server",
+    "client",
+], optional = true }
 pin-project = { version = "1.1.10", optional = true }
 base64 = { version = "0.22.1", optional = true }
 sha1 = { version = "0.10.6", optional = true }
@@ -50,9 +55,7 @@ rand = "0.9"
 thiserror = "2.0.12"
 bytes = "1.10.1"
 tokio-uring = { git = "https://github.com/kostasgr100/tokio-uring.git", branch = "master" }
-tokio-uring-rustls = { git = "https://github.com/kostasgr100/tokio-uring-rustls.git", branch = "main" }
 rustls = "0.23.23"
-tokio = { version = "1", features = ["io-util"], optional = true }  # Corrected placement
 
 # Axum integration
 axum-core = { version = "0.5.0", optional = true }
@@ -61,20 +64,21 @@ async-trait = { version = "0.1", optional = true }
 
 [features]
 default = ["simd"]
-simd = ["dep:simdutf8/aarch64_neon"]
+simd = ["simdutf8/aarch64_neon"]
 upgrade = [
-    "dep:hyper",
-    "dep:pin-project",
-    "dep:base64",
-    "dep:sha1",
-    "dep:hyper-util",
-    "dep:http-body-util",
+    "hyper",
+    "pin-project",
+    "base64",
+    "sha1",
+    "hyper-util",
+    "http-body-util",
 ]
 unstable-split = []
-with_axum = ["dep:axum-core", "dep:http", "dep:async-trait"]
-tokio = ["dep:tokio"]  # Properly enable tokio dependency
+# Axum integration
+with_axum = ["axum-core", "http", "async-trait"]
 
 [dev-dependencies]
+tokio = { version = "1.43.0", features = ["full", "macros"] }
 tokio-uring-rustls = { git = "https://github.com/kostasgr100/tokio-uring-rustls.git", branch = "main" }
 rustls-pemfile = "2.2.0"
 hyper-util = { version = "0.1.10", features = ["tokio"] }
@@ -107,6 +111,7 @@ required-features = ["upgrade"]
 name = "unmask"
 harness = false
 
+# Build release with debug symbols: cargo build --profile=release-with-debug
 [profile.release-with-debug]
 inherits = "release"
 debug = true
@@ -117,4 +122,4 @@ lto = true
 codegen-units = 1
 
 [package.metadata.docs.rs]
-features = ["upgrade", "with_axum", "tokio"]
+features = ["upgrade", "with_axum"]
