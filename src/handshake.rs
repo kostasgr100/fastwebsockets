@@ -1,4 +1,4 @@
-use hyper::body::Incoming;
+use hyper::body::{Incoming, BoxBody};
 use hyper::{Request, Response, StatusCode};
 use hyper::header::{CONNECTION, UPGRADE};
 use rand;
@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use bytes::Bytes;
 use std::io;
-use http_body_util::{Empty, BodyExt}; // Added BodyExt
+use http_body_util::{Empty, BodyExt};
 
 use crate::{Role, WebSocket, WebSocketError};
 
@@ -107,8 +107,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Empty::<Bytes>::new().boxed()) // Use BodyExt
-        .map_err(|e| WebSocketError::HTTPError(e.into()))?;
+        .body(Empty::<Bytes>::new().map_err(|_| unreachable!()).boxed()) // Convert to Incoming
+        .map_err(|e| WebSocketError::HTTPError(hyper::Error::from_boxed(e.into_boxed())))?;
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
