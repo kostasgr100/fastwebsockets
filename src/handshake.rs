@@ -8,14 +8,13 @@ use std::future::Future;
 use std::pin::Pin;
 use bytes::Bytes;
 use std::io;
-use http_body_util::Empty; // Added import
+use http_body_util::Empty;
 
 use crate::{Role, WebSocket, WebSocketError};
 
 use tokio_uring_rustls::TlsStream;
 use rustls::ClientConnection;
 
-// Single-threaded UringStream
 pub trait UringStream: 'static {
     fn read(&mut self, buf: Vec<u8>) -> impl Future<Output = (std::io::Result<usize>, Vec<u8>)>;
     fn write(&mut self, buf: Bytes) -> impl Future<Output = (std::io::Result<usize>, Bytes)>;
@@ -84,7 +83,10 @@ where
         .position(|w| w == b"\r\n\r\n")
         .map(|pos| pos + 4)
         .ok_or_else(|| {
-            WebSocketError::HTTPError(hyper::Error::new(hyper::error::Kind::Parse)) // Use Parse error
+            WebSocketError::IoError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Failed to parse HTTP headers",
+            ))
         })?;
     let header_bytes = &response_buf[..header_end];
 
@@ -105,8 +107,8 @@ where
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "Upgrade")
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| WebSocketError::HTTPError(hyper::Error::new(e.into())))?; // Convert http::Error
+        .body(Empty::<Bytes>::new().boxed()) // Convert to Incoming
+        .map_err(|e| WebSocketError::HTTPError(e.into()))?; // Convert http::Error to hyper::Error
 
     let mut ws = WebSocket::after_handshake(socket, Role::Client);
     ws.set_auto_close(true);
