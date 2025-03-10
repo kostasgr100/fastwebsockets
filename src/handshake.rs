@@ -12,7 +12,7 @@ use std::io;
 use crate::{Role, WebSocket, WebSocketError};
 
 // Tokio-uring specific imports
-use tokio_uring_rustls::TlsStream;
+use tokio_uring_rustls::stream::TlsStream;
 use rustls::ClientConnection;
 
 // Define UringStream trait for tokio-uring streams
